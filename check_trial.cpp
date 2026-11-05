@@ -1,5 +1,6 @@
-// Compile with Xtensa GCC -O2. The compiler must prove every check to remove
-// calls to the error-attributed function. This does not execute on hardware.
+// Run on the Linux build host against the actual trial header.
+// Minimal NeoPixelBus interface stub; full firmware build verifies integration.
+#include <cstdlib>
 #include <stdint.h>
 typedef const void* PGM_VOID_P;
 #define pgm_read_byte(p) (*(const uint8_t*)(p))
@@ -14,7 +15,7 @@ struct NeoGrbcwxFeature {
 };
 #define WLED_FW1906_WHITE_FIRST_TRIAL
 #include "WLED/wled00/fw1906_trial.h"
-extern void failure() __attribute__((error("FW1906 byte mapping/readback failed")));
+void failure() { std::abort(); }
 void verify() {
   uint8_t p[18] = {};
   WledFw1906TrialFeature::applyPixelColor(p,1,Color(11,22,33,44,55));
@@ -27,3 +28,4 @@ void verify() {
   WledFw1906TrialFeature::applyPixelColor(p,1,Color());
   for(int i=0;i<18;i++) if(p[i]) failure();
 }
+int main() { verify(); return 0; }
