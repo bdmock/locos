@@ -1,0 +1,102 @@
+name: Build FW1906 trial firmware
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/build-firmware.yml'
+      - 'fw1906_trial.h'
+      - 'platformio_override.ini'
+      - 'check_trial.cpp'
+
+permissions:
+  contents: read
+
+jobs:
+  firmware:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Fetch exact upstream release and apply trial
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch v16.0.1 https://github.com/wled/WLED.git WLED
+          test "$(git -C WLED rev-parse HEAD)" = 29b389df1c1aaec6ff53aea742d17063b985906c
+          cp fw1906_trial.h WLED/wled00/fw1906_trial.h
+          cp platformio_override.ini WLED/platformio_override.ini
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('WLED/wled00/bus_wrapper.h')
+          s = p.read_text(encoding='utf-8-sig')
+          assert s.count('#include "NeoPixelBus.h"') == 1
+          assert s.count('NeoPixelBus<NeoGrbcwxFeature,') == 7
+          s = s.replace('#include "NeoPixelBus.h"', '#include "NeoPixelBus.h"\n#include "fw1906_trial.h"')
+          s = s.replace('NeoPixelBus<NeoGrbcwxFeature,', 'NeoPixelBus<WledFw1906TrialFeature,')
+          p.write_text(s)
+          PY
+      - name: Check byte ordering and inverse pixel reads
+        run: g++ -O2 -Wall -Wextra -c check_trial.cpp -o check_trial.o
+      - name: Install build tools
+        run: python -m pip install platformio==6.2.0
+      - name: Compile firmware
+        shell: bash
+        run: |
+          set -euo pipefail
+          pio run -d WLED -e gledopto_fw1906_trial 2>&1 | tee build.log
+      - name: Validate and package OTA image
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p firmware-download
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib, json, shutil, subprocess
+          src = Path('WLED/.pio/build/gledopto_fw1906_trial/firmware.bin')
+          data = src.read_bytes()
+          assert 0 < len(data) <= 0x180000, 'Application exceeds standard 4MB OTA slot'
+          assert data[0] == 0xe9, 'Not an ESP firmware image'
+          assert int.from_bytes(data[12:14], 'little') == 0, 'Not a classic ESP32 image'
+          assert data[3] >> 4 == 2, 'Image header does not specify 4MB flash'
+          dest = Path('firmware-download/WLED_16.0.1_ESP32_4MB_FW1906_TRIAL1_OTA.bin')
+          shutil.copyfile(src, dest)
+          digest = hashlib.sha256(data).hexdigest()
+          Path('firmware-download/SHA256SUMS.txt').write_text(digest+'  '+dest.name+'\n')
+          Path('firmware-download/build-info.json').write_text(json.dumps({
+            'upstream_commit': subprocess.check_output(['git','-C','WLED','rev-parse','HEAD'],text=True).strip(),
+            'trial_commit': subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
+            'environment': 'gledopto_fw1906_trial', 'bytes': len(data),
+            'ota_slot_bytes': 0x180000, 'sha256': digest,
+            'wire_order': ['CW','WW',0,'G','R','B'], 'hardware_tested': False
+          },indent=2)+'\n')
+          print(f'Validated {len(data):,} bytes; SHA256 {digest}')
+          PY
+          cp OTA-INSTRUCTIONS.md firmware-download/
+          git -C WLED diff -- wled00/bus_wrapper.h > firmware-download/bus-wrapper.patch
+          cp fw1906_trial.h platformio_override.ini firmware-download/
+          cp WLED/LICENSE firmware-download/WLED-LICENSE
+          pio pkg list -d WLED -e gledopto_fw1906_trial > firmware-download/dependencies.txt
+      - name: Upload downloadable firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: WLED-ESP32-4MB-FW1906-TRIAL1-OTA
+          path: firmware-download/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: FW1906-build-log
+          path: build.log
+          if-no-files-found: ignore
+          retention-days: 14
