@@ -45,7 +45,9 @@ jobs:
           p.write_text(s)
           PY
       - name: Check byte ordering and inverse pixel reads
-        run: g++ -O2 -Wall -Wextra -c check_trial.cpp -o check_trial.o
+        run: |
+          g++ -O2 -Wall -Wextra check_trial.cpp -o check_trial
+          ./check_trial
       - name: Install build tools
         run: python -m pip install platformio==6.2.0
       - name: Compile firmware
